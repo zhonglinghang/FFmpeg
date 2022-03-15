@@ -328,6 +328,9 @@ typedef struct AVFilter {
      * activation.
      */
     int (*activate)(AVFilterContext *ctx);
+
+    // handle options for some filters.
+    int (*process_options)(AVFilterContext *ctx, AVDictionary **options, const char *args);
 } AVFilter;
 
 /**
@@ -1170,6 +1173,31 @@ char *avfilter_graph_dump(AVFilterGraph *graph, const char *options);
  *          or AVERROR_EOF if all links returned AVERROR_EOF
  */
 int avfilter_graph_request_oldest(AVFilterGraph *graph);
+
+/**
+ * Filter Graph used for Async Filter
+ * 
+ */
+typedef struct AVFilterGraphAsync {
+    int inited;
+    AVFilterContext *src_ctx;
+    AVFilterContext *sink_ctx;
+    AVFilterGraph *filter_graph;
+
+    // --- input context
+    int w;
+    int h;
+    int pix_fmt;
+    int out_pixfmt;
+    AVRational time_base;
+    AVRational sample_aspect_ratio;
+} AVFilterGraphAsync;
+
+int avfilter_graph_async_init_fg(AVFilterGraphAsync *fgctx, const char *fg_desc, int w, int h, int pix_fmt, AVRational sar, int out_pixfmt, int nb_threads);
+
+int avfilter_graph_async_filter_frame(AVFilterGraphAsync *fgctx, AVFrame *in, AVFrame **out);
+
+int avfilter_graph_async_uninit_fg(AVFilterGraphAsync* fgctx);
 
 /**
  * @}

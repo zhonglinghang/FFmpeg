@@ -39,6 +39,7 @@
 
 #include "audio.h"
 #include "avfilter.h"
+#include "buffersrc.h"
 #include "filters.h"
 #include "formats.h"
 #include "internal.h"
@@ -827,6 +828,19 @@ static int process_options(AVFilterContext *ctx, AVDictionary **options,
                 continue;
             offset = o->offset;
             shorthand = o->name;
+        }
+
+        // for some special filter to handle options, such as async options.
+        if(ctx->filter && ctx->filter->process_options) {
+            ret = ctx->filter->process_options(ctx, options, args);
+            if(ret < 0) {
+                av_log(ctx, AV_LOG_ERROR, "process_options: unable to parse '%s': %d\n", args, ret);
+                return ret;
+            }
+            if(ret) {
+                count++;
+                break;
+            }
         }
 
         ret = av_opt_get_key_value(&args, "=", ":",

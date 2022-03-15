@@ -38,6 +38,7 @@
 
 #include "avfilter.h"
 #include "buffersink.h"
+#include "buffersrc.h"
 #include "formats.h"
 #include "internal.h"
 #include "thread.h"
@@ -1401,4 +1402,164 @@ int ff_filter_graph_run_once(AVFilterGraph *graph)
     if (!filter->ready)
         return AVERROR(EAGAIN);
     return ff_filter_activate(filter);
+}
+
+static av_cold int async_fg_init_filters(const char *filters_desc, AVFilterGraphAsync *fgctx, int nb_threads) 
+{
+    char args[512];
+    int ret = 0;
+    const AVFilter *buffersrc = avfilter_get_by_name("buffer");
+    const AVFilter *buffersink = avfilter_get_by_name("buffersink");
+    AVFilterInOut *outputs = avfilter_inout_alloc();
+    AVFilterInOut *inputs = avfilter_inout_alloc();
+    enum AVPixelFormat out_pixfmts[] = {fgctx->out_pixfmt, AV_PIX_FMT_NONE};
+    AVFilterContext *buffersrc_ctx, *buffersink_ctx;
+    AVFilterGraph *filter_graph;
+    if (!filters_desc || !fgctx) {
+        return -1;
+    }
+
+    // create buffersrc filter
+    filter_graph = avfilter_graph_alloc();
+    if(!outputs || !inputs || !filter_graph) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    // NOTE:
+    // actually fg created a thread pool which is to support parallel filter-execute in filter_frame when invoking internal->execute(...) filter->frame->slicing func.
+    // now we maybe not need it.
+    filter_graph->nb_threads = nb_threads;
+
+    snprintf(args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+        fgctx->w, fgctx->h, fgctx->pix_fmt, fgctx->time_base.num, fgctx->time_base.den,
+        fgctx->sample_aspect_ratio.num, fgctx->sample_aspect_ratio.den);
+    
+    ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in", args, NULL, filter_graph);
+
+    if(ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer source(%d).\n", ret);
+        goto end;
+    }
+
+    ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", NULL, NULL, filter_graph);
+
+    if(ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer sink(%d).\n", ret);
+        goto end;
+    }
+
+    ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", out_pixfmts, AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
+    if(ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format(%d).\n", ret);
+        goto end;
+    }
+
+    outputs->name = av_strdup("in");
+    outputs->filter_ctx = buffersrc_ctx;
+    outputs->pad_idx = 0;
+    outputs->next = NULL;
+
+    inputs->name = av_strdup("out");
+    inputs->filter_ctx = buffersink_ctx;
+    inputs->pad_idx = 0;
+    inputs->next = NULL;
+
+    if ((ret = avfilter_graph_parse_ptr(filter_graph, filters_desc, &inputs, &outputs, NULL)) < 0) {
+        goto end;
+    }
+
+    if ((ret = avfilter_graph_config(filter_graph, NULL)) < 0) {
+        goto end;
+    }
+
+    fgctx->src_ctx = buffersrc_ctx;
+    fgctx->sink_ctx = buffersink_ctx;
+    fgctx->filter_graph = filter_graph;
+end:
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+    return ret;
+}
+
+av_cold int avfilter_graph_async_init_fg(AVFilterGraphAsync* fgctx, const char *fg_desc, int w, int h, int pix_fmt, AVRational sar, int out_pixfmt, int nb_threads) 
+{
+    int reinited = 0;
+    if (fgctx->inited) {
+        if (fgctx->w != w ||
+            fgctx->h != h ||
+            fgctx->pix_fmt != pix_fmt ||
+            fgctx->sample_aspect_ratio.num != sar.num ||
+            fgctx->sample_aspect_ratio.den != sar.den || fgctx->out_pixfmt != out_pixfmt) {
+                reinited = 1;
+                av_log(fgctx, AV_LOG_INFO, "Async filter graph ctx [%s]filter input changed\n", fg_desc);
+        }
+    }
+
+    if (!fgctx->inited || reinited) {
+        if(!fgctx->inited) {
+            av_log(fgctx, AV_LOG_INFO, "Async filter graph [%s] init fg, w:%d, h:%d, pix_fmt:%d, sar:{%d:%d}, output pix_fmt:%d\n", fg_desc, w, h, pix_fmt, sar.num, sar.den, out_pixfmt);
+        } else {
+            av_log(fgctx, AV_LOG_INFO, "Async filter graph [%s] reinit fg, old [w:%d, h:%d, pix_fmt:%d, sar:{%d:%d}], new [w:%d, h:%d, pix_fmt:%d, sar:{%d:%d}]",
+                fg_desc, fgctx->w, fgctx->h, fgctx->pix_fmt, fgctx->sample_aspect_ratio.num, fgctx->sample_aspect_ratio.den,
+                w, h, pix_fmt, sar.num, sar.den);
+        }
+
+        if (reinited && fgctx->filter_graph) {
+            av_log(fgctx, AV_LOG_INFO, "Async filter graph [%s] filter reinit, now free old fg.\n", fg_desc);
+            avfilter_graph_free(&fgctx->filter_graph);
+            reinited = 0;
+        }
+
+        fgctx->w = w;
+        fgctx->h = h;
+        fgctx->pix_fmt = pix_fmt;
+        fgctx->time_base = (AVRational){1, 1};
+        fgctx->sample_aspect_ratio = sar;
+        fgctx->out_pixfmt = out_pixfmt;
+
+        if(!async_fg_init_filters(fg_desc, fgctx, nb_threads)) {
+            fgctx->inited = 1;
+        } else {
+            av_log(fgctx, AV_LOG_ERROR, "ERROR: Async filter graph [%s] filter init fg failed\n", fg_desc);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+av_cold int avfilter_graph_async_uninit_fg(AVFilterGraphAsync* fgctx) 
+{
+    if (fgctx && fgctx->inited && fgctx->filter_graph) {
+        avfilter_graph_free(&fgctx->filter_graph);
+        memset(fgctx, 0, sizeof(AVFilterGraphAsync));
+    }
+    return 0;
+}
+
+int avfilter_graph_async_filter_frame(AVFilterGraphAsync* fgctx, AVFrame *in, AVFrame **ppout) 
+{
+    AVFrame *out = NULL;
+    int ret = 0;
+
+    *ppout = NULL;
+    ret = av_buffersrc_add_frame_flags(fgctx->src_ctx, in, AV_BUFFERSRC_FLAG_PUSH);
+    av_frame_free(&in);
+    if (ret < 0) {
+        av_log(fgctx, AV_LOG_TRACE, "ERROR: add frame failed into buffersrc.\n");
+        return ret;
+    }
+
+    out = av_frame_alloc();
+    if(!out) {
+        av_log(fgctx, AV_LOG_TRACE, "ERROR: Can't allocate avframe.\n");
+        return AVERROR(ENOMEM);
+    }
+
+    ret = av_buffersink_get_frame(fgctx->sink_ctx, out);
+    if(ret < 0) {
+        av_frame_free(&out);
+        return ret;
+    }
+    *ppout = out;
+    return 0;
 }
