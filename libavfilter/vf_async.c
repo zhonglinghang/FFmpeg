@@ -1,3 +1,13 @@
+/**
+ * @file vf_async.c
+ * @author hangzhongling (hangzhongling@google.com)
+ * @brief 
+ * @version 0.1
+ * @date 2022-03-19
+ * 
+ * @copyright Copyright (c) 2022
+ * 
+ */
 #include <pthread.h>
 #include "internal.h"
 #include "libavutil/opt.h"

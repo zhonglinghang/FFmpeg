@@ -316,6 +316,7 @@ External library support:
   --enable-openssl         enable openssl, needed for https support
                            if gnutls, libtls or mbedtls is not used [no]
   --enable-async           enable vf_async filter [no]
+  --enable-pymodule        enable vf_pymodule filter [no]
   --enable-pocketsphinx    enable PocketSphinx, needed for asr filter [no]
   --disable-sndio          disable sndio support [autodetect]
   --disable-schannel       disable SChannel SSP, needed for TLS support on
@@ -1583,6 +1584,10 @@ require_pkg_config(){
     check_pkg_config "$@" || die "ERROR: $pkg_version not found using pkg-config$pkg_config_fail_message"
 }
 
+require_libpython3(){
+    log require_libpython3 "$@"
+}
+
 test_host_cc(){
     log test_host_cc "$@"
     cat > $TMPC
@@ -1761,6 +1766,7 @@ EXTERNAL_LIBRARY_LIST="
     $EXTERNAL_LIBRARY_VERSION3_LIST
     $EXTERNAL_LIBRARY_GPLV3_LIST
     async
+    pymodule
     chromaprint
     gcrypt
     gnutls
@@ -3677,6 +3683,7 @@ xfade_opencl_filter_deps="opencl"
 yadif_cuda_filter_deps="ffnvcodec"
 yadif_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
 async_filter_deps="async"
+pymodule_filter_deps="pymodule"
 
 # examples
 avio_list_dir_deps="avformat avutil"
@@ -6541,6 +6548,7 @@ enabled rkmpp             && { require_pkg_config rkmpp rockchip_mpp  rockchip/r
                                  die "ERROR: rkmpp requires --enable-libdrm"; }
                              }
 enabled vapoursynth       && require_pkg_config vapoursynth "vapoursynth-script >= 42" VSScript.h vsscript_init
+enabled pymodule          && require_libpython3
 
 
 if enabled gcrypt; then
